@@ -47,7 +47,7 @@ export const NewsFeed: React.FC = () => {
         {loading && newsItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-3">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-            <p className="text-sm">AI is scouring the web for the latest news...</p>
+            <p className="text-sm">Fetching the latest news...</p>
           </div>
         ) : newsItems.length === 0 ? (
           <div className="flex items-center justify-center h-full text-slate-500">

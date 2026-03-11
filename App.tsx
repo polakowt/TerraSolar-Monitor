@@ -202,7 +202,7 @@ const App: React.FC = () => {
               <Globe className="w-8 h-8 text-blue-500" />
               TerraSolar Monitor
             </h1>
-            <p className="text-slate-400 mt-2">Real-time Earth & Space Monitor with AI-Curated News and Decadal Trend Analysis</p>
+            <p className="text-slate-400 mt-2">Real-time Earth & Space Monitor with Live News and Decadal Trend Analysis</p>
           </div>
           <div className="flex items-center gap-3">
              <button 
