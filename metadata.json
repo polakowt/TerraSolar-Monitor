@@ -1,0 +1,5 @@
+{
+  "name": "TerraSolar Monitor",
+  "description": "A real-time dashboard tracking global earthquake activity, volcanic eruptions, and solar weather, featuring AI-curated live news and decadal trend analysis.",
+  "requestFramePermissions": []
+}
