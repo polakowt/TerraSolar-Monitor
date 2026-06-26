@@ -8,6 +8,7 @@ import { TrendChart } from './components/TrendChart';
 import { StatsCard } from './components/StatsCard';
 import { NewsFeed } from './components/NewsFeed';
 import { VolcanoFeed } from './components/VolcanoFeed';
+import { QuakeMap } from './components/QuakeMap';
 import { Activity, Globe, Zap, BrainCircuit, RefreshCw, Flame, Send, Sparkles } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -202,7 +203,7 @@ const App: React.FC = () => {
               <Globe className="w-8 h-8 text-blue-500" />
               TerraSolar Monitor
             </h1>
-            <p className="text-slate-400 mt-2">Real-time Earth & Space Monitor with Live News and Decadal Trend Analysis</p>
+            <p className="text-slate-400 mt-2">Real-time global earthquake, volcano &amp; space-weather monitor with decadal trend analysis</p>
           </div>
           <div className="flex items-center gap-3">
              <button 
@@ -214,7 +215,7 @@ const App: React.FC = () => {
             </button>
             <div className="text-xs text-right hidden md:block">
               <div className="text-slate-400">Data Sources</div>
-              <div className="font-mono text-emerald-400">USGS & NASA</div>
+              <div className="font-mono text-emerald-400">USGS · NASA · NOAA · GVP</div>
             </div>
           </div>
         </header>
@@ -262,12 +263,19 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* Main Content Grid */}
+        {/* Hero: Live Seismic Map + Live Feed */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
-          {/* Main Chart Area (Spans 2 cols) */}
-          <div className="lg:col-span-2 space-y-6 flex flex-col">
-            <TrendChart 
+          <div className="lg:col-span-2 h-[560px] lg:h-[660px]">
+            <QuakeMap quakes={recentQuakes} loading={loadingLive} />
+          </div>
+          <div className="lg:col-span-1 h-[560px] lg:h-[660px]">
+            <LiveFeed quakes={recentQuakes} loading={loadingLive} />
+          </div>
+        </div>
+
+        {/* Trends + AI Analyst */}
+        <div className="space-y-6">
+            <TrendChart
               data={historicalData} 
               loading={loadingHistory} 
               currentMinMag={minMagnitude}
@@ -332,13 +340,6 @@ const App: React.FC = () => {
                 </button>
               </form>
             </div>
-          </div>
-
-          {/* Right Sidebar: Live Feed - Fixed height to match main content approx */}
-          <div className="lg:col-span-1 h-[600px] lg:h-[700px]">
-            <LiveFeed quakes={recentQuakes} loading={loadingLive} />
-          </div>
-
         </div>
 
         {/* Additional Feeds Row */}
