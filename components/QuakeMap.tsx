@@ -1,13 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { geoNaturalEarth1, geoPath } from 'd3-geo';
 import { feature } from 'topojson-client';
 import { USGSFeature } from '../types';
-import { X, Activity, ExternalLink } from 'lucide-react';
+import { X, Activity, ExternalLink, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 
 const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
 const W = 800;
 const H = 380;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_ZOOM = 10;
 
 // Color ramp by magnitude — calm green through alarming magenta.
 const magColor = (mag: number) => {
@@ -24,10 +25,17 @@ interface QuakeMapProps {
   loading: boolean;
 }
 
+interface Transform { k: number; x: number; y: number; }
+
 export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
   const [minMag, setMinMag] = useState(4.0);
   const [selected, setSelected] = useState<USGSFeature | null>(null);
   const [land, setLand] = useState<any[]>([]);
+  const [t, setT] = useState<Transform>({ k: 1, x: 0, y: 0 });
+
+  const svgRef = useRef<SVGSVGElement>(null);
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
+  const movedRef = useRef(false);
 
   // Load the world basemap once.
   useEffect(() => {
@@ -48,13 +56,7 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
   const projection = useMemo(() => {
     const proj = geoNaturalEarth1();
     if (land.length > 0) {
-      proj.fitExtent(
-        [
-          [6, 6],
-          [W - 6, H - 6],
-        ],
-        { type: 'FeatureCollection', features: land } as any
-      );
+      proj.fitExtent([[6, 6], [W - 6, H - 6]], { type: 'FeatureCollection', features: land } as any);
     } else {
       proj.scale(150).translate([W / 2, H / 2]);
     }
@@ -62,10 +64,8 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
   }, [land]);
 
   const pathGen = useMemo(() => geoPath(projection), [projection]);
-
   const now = Date.now();
 
-  // Filter + sort small-to-large so the biggest quakes paint on top.
   const visible = useMemo(() => {
     return quakes
       .filter((q) => q.properties.mag >= minMag && q.geometry?.coordinates)
@@ -78,6 +78,68 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
     const max = visible.reduce((m, q) => Math.max(m, q.properties.mag), 0);
     return { count: visible.length, last24, max };
   }, [visible, now]);
+
+  // --- Zoom & pan helpers ---
+  const clampPan = (k: number, x: number, y: number): Transform => ({
+    k,
+    x: Math.min(0, Math.max(W * (1 - k), x)),
+    y: Math.min(0, Math.max(H * (1 - k), y)),
+  });
+
+  // Map a screen point to SVG viewBox coordinates (accounts for letterboxing).
+  const toSvgPoint = (clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const p = pt.matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  };
+
+  const zoomAround = useCallback((px: number, py: number, factor: number) => {
+    setT((prev) => {
+      const k = Math.min(MAX_ZOOM, Math.max(1, prev.k * factor));
+      if (k === prev.k) return prev;
+      const x = px - (px - prev.x) * (k / prev.k);
+      const y = py - (py - prev.y) * (k / prev.k);
+      return clampPan(k, x, y);
+    });
+  }, []);
+
+  // Wheel zoom — registered non-passively so we can preventDefault the scroll.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const p = toSvgPoint(e.clientX, e.clientY);
+      zoomAround(p.x, p.y, e.deltaY < 0 ? 1.2 : 1 / 1.2);
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, [zoomAround]);
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    dragRef.current = toSvgPoint(e.clientX, e.clientY);
+    movedRef.current = false;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const cur = toSvgPoint(e.clientX, e.clientY);
+    const dx = cur.x - dragRef.current.x;
+    const dy = cur.y - dragRef.current.y;
+    if (Math.abs(dx) > 1.5 || Math.abs(dy) > 1.5) movedRef.current = true;
+    setT((prev) => clampPan(prev.k, prev.x + dx, prev.y + dy));
+    dragRef.current = cur;
+  };
+  const endDrag = () => { dragRef.current = null; };
+
+  const zoomButton = (factor: number) => zoomAround(W / 2, H / 2, factor);
+  const reset = () => setT({ k: 1, x: 0, y: 0 });
 
   const FilterButton = ({ val, label }: { val: number; label: string }) => (
     <button
@@ -92,6 +154,8 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
     </button>
   );
 
+  const k = t.k;
+
   return (
     <div className="bg-slate-850 border border-slate-700 rounded-xl p-5 flex flex-col h-full">
       <div className="flex flex-col sm:flex-row sm:items-start justify-between mb-4 gap-3">
@@ -101,7 +165,7 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
             Live Global Seismicity
           </h3>
           <p className="text-xs text-slate-500 mt-1">
-            Earthquakes from the last 30 days · sized &amp; colored by magnitude · pulsing = last 24h
+            Last 30 days · sized &amp; colored by magnitude · pulsing = last 24h · scroll to zoom, drag to pan
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -131,53 +195,73 @@ export const QuakeMap: React.FC<QuakeMapProps> = ({ quakes, loading }) => {
         </div>
       </div>
 
-      <div className="flex-1 bg-slate-900/50 rounded-lg overflow-hidden border border-slate-800 relative min-h-[260px]">
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="w-full h-full" onClick={() => setSelected(null)}>
-          {/* Land */}
-          <g>
-            {land.map((f, i) => (
-              <path key={i} d={pathGen(f) || undefined} fill="#1e293b" stroke="#334155" strokeWidth={0.4} />
-            ))}
-          </g>
-          {/* Quakes */}
-          <g>
-            {visible.map((q) => {
-              const [lon, lat] = q.geometry.coordinates;
-              const xy = projection([lon, lat]);
-              if (!xy) return null;
-              const mag = q.properties.mag;
-              const color = magColor(mag);
-              const radius = Math.max(1.8, (mag - 1.5) * 1.5);
-              const isRecent = now - q.properties.time < DAY_MS;
-              const isSelected = selected?.id === q.id;
-              return (
-                <g
-                  key={q.id}
-                  transform={`translate(${xy[0]}, ${xy[1]})`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelected(q);
-                  }}
-                  style={{ cursor: 'pointer' }}
-                >
-                  {isRecent && mag >= 4.5 && (
-                    <circle r={radius} fill="none" stroke={color} strokeWidth={1} opacity={0.7}>
-                      <animate attributeName="r" from={radius} to={radius * 3.2} dur="1.8s" repeatCount="indefinite" />
-                      <animate attributeName="opacity" from="0.7" to="0" dur="1.8s" repeatCount="indefinite" />
-                    </circle>
-                  )}
-                  <circle
-                    r={radius}
-                    fill={color}
-                    fillOpacity={isSelected ? 0.95 : 0.65}
-                    stroke={isSelected ? '#ffffff' : color}
-                    strokeWidth={isSelected ? 1.5 : 0.6}
-                  />
-                </g>
-              );
-            })}
+      <div className="flex-1 bg-slate-900/50 rounded-lg overflow-hidden border border-slate-800 relative min-h-[260px] group">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full h-full touch-none"
+          style={{ cursor: dragRef.current ? 'grabbing' : 'grab' }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerLeave={endDrag}
+          onClick={() => { if (!movedRef.current) setSelected(null); }}
+        >
+          <g transform={`translate(${t.x} ${t.y}) scale(${k})`}>
+            {/* Land */}
+            <g>
+              {land.map((f, i) => (
+                <path key={i} d={pathGen(f) || undefined} fill="#1e293b" stroke="#334155" strokeWidth={0.4 / k} />
+              ))}
+            </g>
+            {/* Quakes */}
+            <g>
+              {visible.map((q) => {
+                const [lon, lat] = q.geometry.coordinates;
+                const xy = projection([lon, lat]);
+                if (!xy) return null;
+                const mag = q.properties.mag;
+                const color = magColor(mag);
+                const radius = Math.max(1.8, (mag - 1.5) * 1.5) / k;
+                const isRecent = now - q.properties.time < DAY_MS;
+                const isSelected = selected?.id === q.id;
+                return (
+                  <g
+                    key={q.id}
+                    transform={`translate(${xy[0]}, ${xy[1]})`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!movedRef.current) setSelected(q);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    {isRecent && mag >= 4.5 && (
+                      <circle r={radius} fill="none" stroke={color} strokeWidth={1 / k} opacity={0.7}>
+                        <animate attributeName="r" from={radius} to={radius * 3.2} dur="1.8s" repeatCount="indefinite" />
+                        <animate attributeName="opacity" from="0.7" to="0" dur="1.8s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                    <circle
+                      r={radius}
+                      fill={color}
+                      fillOpacity={isSelected ? 0.95 : 0.65}
+                      stroke={isSelected ? '#ffffff' : color}
+                      strokeWidth={(isSelected ? 1.5 : 0.6) / k}
+                    />
+                  </g>
+                );
+              })}
+            </g>
           </g>
         </svg>
+
+        {/* Zoom controls */}
+        <div className="absolute top-4 left-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+          <button onClick={() => zoomButton(1.5)} className="p-2 bg-slate-800/90 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-600 backdrop-blur-sm transition-colors" title="Zoom in"><ZoomIn className="w-4 h-4" /></button>
+          <button onClick={() => zoomButton(1 / 1.5)} className="p-2 bg-slate-800/90 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-600 backdrop-blur-sm transition-colors" title="Zoom out"><ZoomOut className="w-4 h-4" /></button>
+          <button onClick={reset} className="p-2 bg-slate-800/90 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-600 backdrop-blur-sm transition-colors" title="Reset view"><Maximize className="w-4 h-4" /></button>
+        </div>
 
         {/* Detail panel */}
         {selected && (
