@@ -7,17 +7,20 @@ import { createServer as createViteServer } from "vite";
 import news from "./api/news.js";
 import volcanoesLive from "./api/volcanoes/live.js";
 import volcanoesHistory from "./api/volcanoes/history.js";
+import analyze from "./api/analyze.js";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(cors());
+  app.use(express.json());
 
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.get("/api/news", news as any);
   app.get("/api/volcanoes/live", volcanoesLive as any);
   app.get("/api/volcanoes/history", volcanoesHistory as any);
+  app.post("/api/analyze", analyze as any);
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

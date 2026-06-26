@@ -68,7 +68,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({
               <span className="font-mono text-white">{data.cmeMeanSpeed ? `${data.cmeMeanSpeed} km/s` : 'N/A'}</span>
             </p>
              <p className="text-red-400 flex justify-between gap-4">
-              <span>Volcanic Eruptions:</span>
+              <span>Significant Eruptions:</span>
               <span className="font-mono text-white">{data.volcanoCount ?? 'N/A'}</span>
             </p>
             <p className="text-orange-400 flex justify-between gap-4">
@@ -250,11 +250,11 @@ export const TrendChart: React.FC<TrendChartProps> = ({
                 dot={{ r: 3, fill: '#ef4444', strokeWidth: 1, stroke: '#fff' }} 
               />
               
-              <YAxis yAxisId="volcano" orientation="right" hide={true} domain={[0, 200]} />
-              <Bar 
-                yAxisId="volcano" 
-                dataKey="volcanoCount" 
-                name="Volcanic Eruptions" 
+              <YAxis yAxisId="volcano" orientation="right" hide={true} domain={[0, (max: number) => Math.max(10, Math.ceil(max * 1.6))]} />
+              <Bar
+                yAxisId="volcano"
+                dataKey="volcanoCount"
+                name="Significant Eruptions"
                 fill="#ef4444" 
                 radius={[4, 4, 0, 0]} 
                 opacity={0.4} 
