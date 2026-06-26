@@ -1,14 +1,19 @@
 import { YearlyStat, USGSFeature, NewsItem, VolcanoEvent } from "../types";
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
 /**
- * Requests an AI analysis from the server-side /api/analyze function.
- * The Gemini API key lives only on the server and is never exposed to the
- * browser. We send just the small data context the model needs.
+ * Sends the full conversation to the server-side /api/analyze function and
+ * returns the assistant's reply. The Gemini API key lives only on the server
+ * and is never exposed to the browser.
  */
-export const analyzeEarthquakeTrends = async (
+export const requestAnalysis = async (
+  messages: ChatMessage[],
   historicalData: YearlyStat[],
-  recentFeatures: USGSFeature[],
-  customQuestion?: string
+  recentFeatures: USGSFeature[]
 ): Promise<string> => {
   const bigQuakes = recentFeatures
     .filter(f => f.properties.mag >= 6.0)
@@ -21,7 +26,7 @@ export const analyzeEarthquakeTrends = async (
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ historicalData, bigQuakes, customQuestion }),
+    body: JSON.stringify({ messages, historicalData, bigQuakes }),
   });
 
   if (!response.ok) {

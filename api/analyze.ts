@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
-// Server-side AI analysis. The Gemini key stays on the server (read from
-// process.env) and is never shipped to the browser.
+// Server-side AI analyst (multi-turn chat). The Gemini key stays on the server
+// and is never shipped to the browser.
 
 const executeWithRetry = async <T>(
   operation: () => Promise<T>,
@@ -50,69 +50,82 @@ export default async function handler(req: any, res: any) {
     typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
   const historicalData: any[] = body.historicalData || [];
   const bigQuakes: any[] = body.bigQuakes || [];
-  const customQuestion: string | undefined = body.customQuestion;
 
-  const trendSummary = historicalData
-    .map(
-      (d) =>
-        `Year ${d.year}: ${d.count} Quakes (Mag 5.0+), ${
-          d.cmeCount !== undefined ? `${d.cmeCount} CMEs` : "CME Data N/A"
-        } ${d.cmeMeanSpeed ? `(Avg Speed: ${d.cmeMeanSpeed} km/s)` : ""}, ${
-          d.volcanoCount !== undefined
-            ? `${d.volcanoCount} Significant Eruptions`
-            : "Volcano Data N/A"
-        }, Max Quake Mag: ${d.maxMag}`
-    )
-    .join("\n");
-
-  const recentBigQuakes = bigQuakes
-    .map(
-      (q) =>
-        `- Mag ${q.mag} in ${q.place} on ${new Date(q.time).toLocaleDateString()}`
-    )
-    .join("\n");
-
-  let prompt = "";
-  if (customQuestion) {
-    prompt = `
-    You are a geological and space weather data analyst. Answer the specific user question below based STRICTLY on the provided data context (USGS Earthquakes, NASA CME data, and NOAA significant volcanic eruption data).
-
-    Historical Data Context:
-    ${trendSummary}
-
-    Recent Significant Earthquakes (Last 30 days):
-    ${recentBigQuakes || "No magnitude 6.0+ earthquakes in the last 30 days."}
-
-    User Question: "${customQuestion}"
-
-    Please provide a direct, professional, and concise answer (under 200 words). If the data doesn't support an answer, state that clearly.
-    `;
-  } else {
-    prompt = `
-    You are a geological and space weather data analyst. Analyze the following combined data set of USGS Earthquake data, NASA Coronal Mass Ejection (CME) data, and NOAA significant volcanic eruption data.
-
-    Historical Trend (Annual Data):
-    ${trendSummary}
-
-    Significant Recent Earthquakes (Last 30 days):
-    ${recentBigQuakes || "No magnitude 6.0+ earthquakes in the last 30 days."}
-
-    Please provide a concise analysis answering these questions:
-    1. Is the frequency of significant earthquakes (Mag 5.0+) and volcanic eruptions increasing, decreasing, or stable?
-    2. Looking at the data provided, does there appear to be any obvious visual correlation between high CME activity years (solar maximums) and seismic/volcanic frequency or severity? (Be scientifically cautious).
-    3. What is the brief outlook based on the most recent activity?
-
-    Keep the tone professional, interesting, and accessible. Limit to 250 words.
-    `;
+  // Accept a multi-turn `messages` array; fall back to a single `customQuestion`
+  // (older clients) so a stale cached frontend still works.
+  let messages: { role: string; text: string }[] = Array.isArray(body.messages)
+    ? body.messages
+    : [];
+  if (messages.length === 0 && body.customQuestion) {
+    messages = [{ role: "user", text: String(body.customQuestion) }];
   }
+  if (messages.length === 0) {
+    messages = [
+      {
+        role: "user",
+        text: "Give me a concise overview report of current global seismic, solar, and volcanic activity and any notable trends in the data.",
+      },
+    ];
+  }
+
+  const trendSummary =
+    historicalData
+      .map(
+        (d) =>
+          `Year ${d.year}: ${d.count} Quakes (Mag 5.0+), ${
+            d.cmeCount !== undefined ? `${d.cmeCount} CMEs` : "CME Data N/A"
+          } ${d.cmeMeanSpeed ? `(Avg Speed: ${d.cmeMeanSpeed} km/s)` : ""}, ${
+            d.volcanoCount !== undefined
+              ? `${d.volcanoCount} Significant Eruptions`
+              : "Volcano Data N/A"
+          }, Max Quake Mag: ${d.maxMag}`
+      )
+      .join("\n") || "No annual trend data loaded.";
+
+  const recentBigQuakes =
+    bigQuakes
+      .map(
+        (q) =>
+          `- Mag ${q.mag} in ${q.place} on ${new Date(
+            q.time
+          ).toLocaleDateString()}`
+      )
+      .join("\n") || "No magnitude 6.0+ earthquakes in the last 30 days.";
+
+  const systemInstruction = `You are the AI analyst for TerraSolar Monitor, a dashboard tracking global earthquakes, volcanic eruptions, and space weather (solar activity).
+
+You are given a snapshot of the dashboard's live data below. Use it as evidence when it's relevant, but you are NOT restricted to it: draw freely on your broad scientific knowledge of geology, seismology, volcanology, plate tectonics, and space weather to answer the user's questions. Engage fully with hypotheticals and "what if" scenarios (e.g. "what if the entire Pacific Ring of Fire erupted at once") — reason through plausible mechanisms and consequences rather than refusing for lack of data.
+
+Style & integrity:
+- Be scientifically grounded and clear about uncertainty; don't invent specific statistics that aren't supported.
+- Avoid doom-mongering and pseudoscience (e.g. animals or "doomsday fish" predicting earthquakes), but DO explore serious hypotheticals thoughtfully and vividly.
+- Keep answers concise and accessible — a few short paragraphs. Use light markdown (bold, bullet lists) for readability.
+- This is a conversation: take prior turns into account.
+
+LIVE DATA SNAPSHOT
+Annual trends:
+${trendSummary}
+
+Recent significant earthquakes (last 30 days):
+${recentBigQuakes}`;
+
+  const contents = messages
+    .filter((m) => m && m.text && m.text.trim())
+    .map((m) => ({
+      role: m.role === "assistant" || m.role === "model" ? "model" : "user",
+      parts: [{ text: m.text }],
+    }));
 
   try {
     const ai = new GoogleGenAI({ apiKey });
     const response = await executeWithRetry(() =>
       ai.models.generateContent({
         model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-        contents: prompt,
-        config: { thinkingConfig: { thinkingBudget: 0 } },
+        contents,
+        config: {
+          systemInstruction,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       })
     );
     res.status(200).json({

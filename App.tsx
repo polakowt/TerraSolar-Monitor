@@ -1,15 +1,52 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { USGSFeature, YearlyStat, AnalysisState } from './types';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { USGSFeature, YearlyStat } from './types';
 import { fetchRecentLiveFeed, fetchHistoricalTrends } from './services/usgs';
 import { fetchCMEHistory } from './services/nasa';
-import { analyzeEarthquakeTrends, fetchVolcanoHistory } from './services/gemini';
+import { requestAnalysis, fetchVolcanoHistory, ChatMessage } from './services/gemini';
 import { LiveFeed } from './components/LiveFeed';
 import { TrendChart } from './components/TrendChart';
 import { StatsCard } from './components/StatsCard';
 import { NewsFeed } from './components/NewsFeed';
 import { VolcanoFeed } from './components/VolcanoFeed';
 import { QuakeMap } from './components/QuakeMap';
-import { Activity, Globe, Zap, BrainCircuit, RefreshCw, Flame, Send, Sparkles } from 'lucide-react';
+import { Activity, Globe, Zap, BrainCircuit, RefreshCw, Flame, Send, Sparkles, Trash2 } from 'lucide-react';
+
+// Minimal markdown renderer for the assistant's replies: **bold**, bullet
+// lists ("- "/"* "), numbered lists, and paragraphs. Avoids a markdown dep.
+const renderInline = (s: string) =>
+  s.split(/(\*\*[^*]+\*\*)/g).map((part, i) => {
+    const m = part.match(/^\*\*([^*]+)\*\*$/);
+    return m
+      ? <strong key={i} className="font-semibold text-white">{m[1]}</strong>
+      : <React.Fragment key={i}>{part}</React.Fragment>;
+  });
+
+const RichText: React.FC<{ text: string }> = ({ text }) => {
+  const blocks: React.ReactNode[] = [];
+  let bullets: string[] = [];
+  const flush = (key: string) => {
+    if (bullets.length) {
+      blocks.push(
+        <ul key={key} className="list-disc pl-5 space-y-1 my-1">
+          {bullets.map((b, j) => <li key={j}>{renderInline(b)}</li>)}
+        </ul>
+      );
+      bullets = [];
+    }
+  };
+  text.split('\n').forEach((raw, idx) => {
+    const line = raw.trim();
+    const bullet = line.match(/^[-*]\s+(.*)/) || line.match(/^\d+\.\s+(.*)/);
+    if (bullet) {
+      bullets.push(bullet[1]);
+    } else {
+      flush(`ul-${idx}`);
+      if (line) blocks.push(<p key={idx} className="my-1">{renderInline(line)}</p>);
+    }
+  });
+  flush('ul-end');
+  return <div className="space-y-1">{blocks}</div>;
+};
 
 const App: React.FC = () => {
   const [recentQuakes, setRecentQuakes] = useState<USGSFeature[]>([]);
@@ -21,13 +58,12 @@ const App: React.FC = () => {
   const [minMagnitude, setMinMagnitude] = useState(5.0);
   const [historyRange, setHistoryRange] = useState(10); // Default to 10 years for speed
   
-  // AI State
-  const [analysis, setAnalysis] = useState<AnalysisState>({
-    isLoading: false,
-    content: null,
-    error: null
-  });
-  const [customQuestion, setCustomQuestion] = useState('');
+  // AI Chat State
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiInput, setAiInput] = useState('');
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   const loadLiveData = useCallback(async () => {
     setLoadingLive(true);
@@ -90,24 +126,39 @@ const App: React.FC = () => {
     loadHistoryData(minMagnitude, historyRange);
   };
 
-  const handleGenerateAnalysis = async (question?: string) => {
-    if (historicalData.length === 0) return;
-    
-    setAnalysis({ isLoading: true, content: null, error: null });
+  const sendToAnalyst = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || aiLoading) return;
+
+    const nextMessages: ChatMessage[] = [...messages, { role: 'user', text: trimmed }];
+    setMessages(nextMessages);
+    setAiInput('');
+    setAiError(null);
+    setAiLoading(true);
     try {
-      const result = await analyzeEarthquakeTrends(historicalData, recentQuakes, question);
-      setAnalysis({ isLoading: false, content: result, error: null });
-    } catch (err) {
-      setAnalysis({ isLoading: false, content: null, error: 'Failed to generate analysis.' });
+      const reply = await requestAnalysis(nextMessages, historicalData, recentQuakes);
+      setMessages(prev => [...prev, { role: 'assistant', text: reply }]);
+    } catch (err: any) {
+      setAiError(err?.message || 'Failed to generate analysis.');
+    } finally {
+      setAiLoading(false);
     }
-  };
+  }, [messages, aiLoading, historicalData, recentQuakes]);
 
   const handleCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customQuestion.trim()) return;
-    handleGenerateAnalysis(customQuestion);
-    setCustomQuestion('');
+    sendToAnalyst(aiInput);
   };
+
+  const handleClearChat = () => {
+    setMessages([]);
+    setAiError(null);
+  };
+
+  // Auto-scroll the chat to the latest message.
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, aiLoading]);
 
   // --- STAT CALCULATIONS ---
 
@@ -284,56 +335,100 @@ const App: React.FC = () => {
               onRangeChange={setHistoryRange}
             />
 
-            {/* AI Analysis Section */}
-            <div className="bg-slate-850 border border-slate-700 rounded-xl p-5 flex flex-col">
+            {/* AI Analysis Section (chat) */}
+            <div className="bg-slate-850 border border-slate-700 rounded-xl p-5 flex flex-col h-[480px]">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
                   <BrainCircuit className="w-5 h-5 text-purple-400" />
                   AI Data Analyst
                 </h3>
-                <button
-                  onClick={() => handleGenerateAnalysis()}
-                  disabled={analysis.isLoading || loadingHistory}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-lg border border-slate-600 transition-colors flex items-center gap-2"
-                >
-                   <Sparkles className="w-3 h-3 text-yellow-400" />
-                   Standard Report
-                </button>
+                <div className="flex items-center gap-2">
+                  {messages.length > 0 && (
+                    <button
+                      onClick={handleClearChat}
+                      disabled={aiLoading}
+                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-medium rounded-lg border border-slate-600 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3 h-3" /> Clear
+                    </button>
+                  )}
+                  <button
+                    onClick={() => sendToAnalyst('Give me a concise overview report of current global seismic, solar, and volcanic activity and any notable trends.')}
+                    disabled={aiLoading || loadingHistory}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-lg border border-slate-600 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Sparkles className="w-3 h-3 text-yellow-400" /> Report
+                  </button>
+                </div>
               </div>
-              
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 mb-4 min-h-[120px] max-h-[300px] overflow-y-auto">
-                {analysis.isLoading ? (
-                  <div className="space-y-3 animate-pulse">
-                    <div className="h-4 bg-slate-800 rounded w-3/4"></div>
-                    <div className="h-4 bg-slate-800 rounded w-1/2"></div>
-                    <div className="h-4 bg-slate-800 rounded w-5/6"></div>
+
+              {/* Conversation thread */}
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 mb-4 flex-1 min-h-0 overflow-y-auto space-y-4">
+                {messages.length === 0 && !aiLoading && !aiError && (
+                  <div className="h-full flex flex-col items-center justify-center text-center gap-3 text-slate-500">
+                    <BrainCircuit className="w-8 h-8 text-slate-700" />
+                    <p className="text-sm italic max-w-sm">
+                      Ask anything about earthquakes, volcanoes, or space weather — including "what if" scenarios. Or hit "Report" for an overview.
+                    </p>
+                    <div className="flex flex-wrap gap-2 justify-center">
+                      {[
+                        'What if the Pacific Ring of Fire all went off at once?',
+                        'Are major earthquakes getting more frequent?',
+                        'Can solar storms trigger earthquakes?',
+                      ].map(s => (
+                        <button
+                          key={s}
+                          onClick={() => sendToAnalyst(s)}
+                          className="text-xs px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-slate-400 hover:text-purple-300 hover:border-purple-700 transition-colors"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                ) : analysis.error ? (
-                  <p className="text-red-400 text-sm">{analysis.error}</p>
-                ) : analysis.content ? (
-                  <div className="prose prose-invert prose-sm max-w-none text-slate-300">
-                    <p className="whitespace-pre-line leading-relaxed">{analysis.content}</p>
-                  </div>
-                ) : (
-                  <p className="text-slate-500 text-sm italic">
-                    Ask a question below or click "Standard Report" for an AI analysis of the correlation between seismic and solar data.
-                  </p>
                 )}
+
+                {messages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[85%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
+                      m.role === 'user'
+                        ? 'bg-purple-600/90 text-white'
+                        : 'bg-slate-800 text-slate-200 border border-slate-700'
+                    }`}>
+                      {m.role === 'assistant' ? <RichText text={m.text} /> : m.text}
+                    </div>
+                  </div>
+                ))}
+
+                {aiLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-3">
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-2 h-2 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {aiError && <p className="text-red-400 text-sm">{aiError}</p>}
+                <div ref={chatEndRef} />
               </div>
 
               {/* Input Area */}
               <form onSubmit={handleCustomSubmit} className="relative">
-                <input 
+                <input
                    type="text"
-                   value={customQuestion}
-                   onChange={(e) => setCustomQuestion(e.target.value)}
-                   placeholder="Ask a specific question about the data..."
-                   disabled={analysis.isLoading || loadingHistory}
+                   value={aiInput}
+                   onChange={(e) => setAiInput(e.target.value)}
+                   placeholder="Ask anything about quakes, volcanoes, or space weather..."
+                   disabled={aiLoading}
                    className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-4 pr-12 py-3 text-sm text-slate-200 focus:outline-none focus:border-purple-500 transition-colors placeholder:text-slate-600 disabled:opacity-50"
                 />
                 <button
                    type="submit"
-                   disabled={analysis.isLoading || !customQuestion.trim() || loadingHistory}
+                   disabled={aiLoading || !aiInput.trim()}
                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-purple-600 text-white rounded-md hover:bg-purple-500 disabled:opacity-50 disabled:hover:bg-purple-600 transition-colors"
                 >
                    <Send className="w-4 h-4" />
